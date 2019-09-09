@@ -197,7 +197,7 @@ class CRshim
 
     static std::string myPID()
     {
-        return addHostname("@", "pid" + std::to_string(getpid()));
+        return addHostname("_", "pid" + std::to_string(getpid()));
     }
 
     Timer schedule(ndn::time::nanoseconds d, const TimerCb& cb) {

@@ -51,15 +51,11 @@ namespace tlv
     enum { syncpsContent = 129 }; // tlv for block of publications
 } // namespace tlv
 
-const int maxPubSize = 1200;    // max payload in Data (approximate)
+constexpr int maxPubSize = 1300;    // max payload in Data (approximate)
 
-// see addToActive() for a discussion about the relationship
-// between these times.
 using namespace ndn::literals::time_literals;
-const ndn::time::milliseconds SYNC_REPLY_FRESHNESS = 1_s;
-const ndn::time::milliseconds SYNC_INTEREST_LIFTIME = 1_s;
-const ndn::time::milliseconds maxPubLifetime = 2_s;
-const ndn::time::milliseconds maxClockSkew = 1_s;
+constexpr ndn::time::milliseconds maxPubLifetime = 1_s;
+constexpr ndn::time::milliseconds maxClockSkew = 1_s;
 
 /**
  * @brief app callback when new publications arrive
@@ -108,7 +104,7 @@ class SyncPubsub
      * @param expectedNumEntries expected entries in IBF
      */
     SyncPubsub(ndn::Face& face, Name syncPrefix,
-        ndn::time::milliseconds syncInterestLifetime = SYNC_INTEREST_LIFTIME,
+        ndn::time::milliseconds syncInterestLifetime = 4_s,
         size_t expectedNumEntries = 85)  // = 128/1.5 (see detail/iblt.hpp)
         : m_face(face),
           m_syncPrefix(std::move(syncPrefix)),
@@ -145,13 +141,11 @@ class SyncPubsub
             NDN_LOG_WARN("republish of '" << pub.getName() << "' ignored");
         } else {
             NDN_LOG_INFO("Publish: " << pub.getName());
+            ++m_publications;
             addToActive(pub, true);
-            // There's usually a pending interest so see if this
-            // pub will let us respond to it. If there's no pending
-            // interest, send an interest to let others know there's new
-            // data and/or solicit their reply
-            if (m_lastInterest != nullptr) {
-                handleLastInterest();
+            // new pub may let us respond to pending interest(s).
+            if (! m_delivering) {
+                handleInterests();
             }
         }
         return *this;
@@ -271,11 +265,11 @@ class SyncPubsub
      */
     void reExpressSyncInterest()
     {
-        // The interest is sent 100ms ahead of when it's due to time out
+        // The interest is sent 20ms ahead of when it's due to time out
         // to allow for propagation and precessing delays.
         //
-        // note: previously scheduled event is automatically cancelled.
-        auto when = m_syncInterestLifetime - 100_ms;
+        // note: previously scheduled timer is automatically cancelled.
+        auto when = m_syncInterestLifetime - 20_ms;
         m_scheduledSyncInterestId =
             m_scheduler.schedule(when, [this] { sendSyncInterest(); });
     }
@@ -302,26 +296,18 @@ class SyncPubsub
         m_iblt.appendToName(syncInterestName);
 
         ndn::Interest syncInterest(syncInterestName);
-        m_lastNonce = ndn::random::generateWord32();
-        syncInterest.setNonce(m_lastNonce)
+        syncInterest.setNonce(ndn::random::generateWord32())
             .setCanBePrefix(true)
             .setMustBeFresh(true)
             .setInterestLifetime(m_syncInterestLifetime);
         m_face.expressInterest(syncInterest,
-            [this](auto i, auto d) {
-                if (i.getNonce() != m_lastNonce) {
-                    // ignore responses to interests before our most recent to avoid
-                    // doing a lot of work for an incomplete reply.
-                    NDN_LOG_DEBUG("onSyncData: ignoring " << std::hex << i.getNonce()
-                               << "/" << std::hash<ndn::Name>{}(i.getName()));
-                    return;
-                }
-                m_validator.validate(d,
-                    [this, i](auto d) { onValidData(i, d); },
-                    [this](auto d, auto e) { onInvalidData(d, e); }); },
-            [this](auto i, auto n) { onNack(i, n); },
-            [this](auto i) { onInterestTimeout(i); });
-
+                [this](auto i, auto d) {
+                    m_validator.validate(d,
+                        [this, i](auto d) { onValidData(i, d); },
+                        [this](auto d, auto e) { onInvalidData(d, e); }); },
+                [this](auto i, auto n) { onNack(i, n); },
+                [this](auto i) { onInterestTimeout(i); });
+        ++m_interestsSent;
         NDN_LOG_DEBUG("sendSyncInterest " << std::hex
                       << syncInterest.getNonce() << "/"
                       << std::hash<ndn::Name>{}(syncInterestName));
@@ -332,8 +318,9 @@ class SyncPubsub
      */
     void sendSyncInterestSoon()
     {
+        NDN_LOG_DEBUG("sendSyncInterestSoon");
         m_scheduledSyncInterestId =
-            m_scheduler.schedule(2_ms, [this]{ sendSyncInterest(); });
+            m_scheduler.schedule(3_ms, [this]{ sendSyncInterest(); });
     }
 
     /**
@@ -356,32 +343,39 @@ class SyncPubsub
             NDN_LOG_INFO("invalid sync interest: " << interest);
             return;
         }
-        // remember last valid interest then check it against our current iblt
-        //m_lastInterest = interest.shared_from_this();
-        m_lastInterest = std::make_shared<const ndn::Interest>(interest);
-        handleLastInterest();
+        if (!  handleInterest(interestName)) {
+            // couldn't handle interest immediately - remember it until
+            // we satisfy it or it times out;
+            m_interests[interestName] = ndn::time::system_clock::now() +
+                                        m_syncInterestLifetime;
+        }
     }
 
-    void handleLastInterest()
+    void handleInterests()
     {
-        // bail if we don't have some peer's interest or it has timed out.
-        // Note that we hold a reference to the interest if it times out
-        // to avoid the race of it timing out while we're in this routine.
-        if (m_lastInterest == nullptr || m_lastInterest.use_count() < 1) {
-            return;
+        auto now = ndn::time::system_clock::now();
+        for (auto i = m_interests.begin(); i != m_interests.end(); ) {
+            const auto& [name, expires] = *i;
+            if (expires <= now || handleInterest(name)) {
+                i = m_interests.erase(i);
+            } else {
+                ++i;
+            }
         }
-        const auto interestName = m_lastInterest->getName();
+    }
 
+    bool handleInterest(const ndn::Name& name)
+    {
         // 'Peeling' the difference between the peer's iblt & ours gives
         // two sets:
         //   have - (hashes of) items we have that they don't
         //   need - (hashes of) items we need that they have
         IBLT iblt(m_expectedNumEntries);
         try {
-            iblt.initialize(interestName.get(-1));
+            iblt.initialize(name.get(-1));
         } catch (const std::exception& e) {
             NDN_LOG_WARN(e.what());
-            return;
+            return true;
         }
         std::set<uint32_t> have;
         std::set<uint32_t> need;
@@ -411,7 +405,7 @@ class SyncPubsub
         // Respond with as many pubs will fit in one Data.
 
         if (pOurs.size() <= 0) {
-            return;
+            return false;
         }
         ndn::Block pubs(tlv::syncpsContent);
 
@@ -437,13 +431,13 @@ class SyncPubsub
                 }
             }
         }
-        if (!pubs.empty()) {
-            sendSyncInterest();
-            pubs.encode();
-            sendSyncData(interestName, pubs);
-            // we've satisfied the interest
-            m_lastInterest = nullptr;
+        if (pubs.empty()) {
+            return false;
         }
+        sendSyncInterest();
+        pubs.encode();
+        sendSyncData(name, pubs);
+        return true;
     }
 
     /**
@@ -462,8 +456,6 @@ class SyncPubsub
         NDN_LOG_DEBUG("sendSyncData: " << name);
         std::shared_ptr<ndn::Data> data = std::make_shared<ndn::Data>();
         data->setName(name).setContent(pubs).setFreshnessPeriod(maxPubLifetime / 2);
-
-        // XXX content is signed so just use weak signature here
         m_keyChain.sign(*data, m_signingInfo);
         m_face.put(*data);
     }
@@ -494,13 +486,9 @@ class SyncPubsub
 
         // if publications result from handling this data we don't want to
         // respond to a peer's interest until we've handled all of them.
-        bool delivered = false;
-        auto savedInterest = m_lastInterest;
-        if (savedInterest != nullptr) {
-            m_lastInterest = nullptr;
-        }
+        m_delivering = true;
+        auto initpubs = m_publications;
 
-        int nitems{0};
         pubs.parse();
         for (const auto& p : pubs.elements()) {
             if (p.type() != ndn::tlv::Data) {
@@ -521,7 +509,6 @@ class SyncPubsub
             // we don't already have this publication so deliver it
             // to the longest match subscription.
             addToActive(pub);
-            ++nitems;
             // XXX lower_bound goes one too far when doing longest
             // prefix match. It would be faster to stick a marker on
             // the end of subscription entries so this wouldn't happen.
@@ -534,30 +521,22 @@ class SyncPubsub
                 (sub != m_subscription.begin() && (--sub)->first.isPrefixOf(nm))) {
                 NDN_LOG_DEBUG("deliver " << nm << " to " << sub->first);
                 sub->second(pub);
-                delivered = true;
             } else {
                 NDN_LOG_DEBUG("no sub for  " << nm);
             }
         }
 
-        if (nitems > 0) {
-            NDN_LOG_DEBUG("got " << nitems << " items from " << std::hex
-                          << interest.getNonce() << "/"
-                          << std::hash<ndn::Name>{}(interest.getName()));
+        // If deliveries resulted in new publications, try to satisfy
+        // pending peer interests (which may result in us sending
+        // a new interest).  If no Interest is sent, send one to replace
+        // the one consumed by this Data.
+        m_delivering = false;
+        auto isent = m_interestsSent;
+        if (initpubs != m_publications) {
+            handleInterests();
         }
-        // If we don't have a peer Interest or didn't deliver any
-        // subscriptions, send an Interest to replace the one consumed by
-        // this Data.
-        // If we delivered subscription(s) and had a pending peer interest,
-        // try to satisfy that interest with any new publications resulting
-        // from the delivery (this also results in us sending a new interest).
-        if (savedInterest == nullptr || !delivered) {
-            sendSyncInterestSoon();
-        } else if (savedInterest != nullptr) {
-            m_lastInterest = savedInterest;
-            if (delivered) {
-                handleLastInterest();
-            }
+        if (isent == m_interestsSent) {
+            sendSyncInterest();
         }
     }
 
@@ -656,31 +635,28 @@ class SyncPubsub
         BOOST_THROW_EXCEPTION(Error(msg));
     }
 
-    uint64_t msClock()
-    {
-        return ndn::time::toUnixTimestamp(ndn::time::system_clock::now())
-            .count();
-    }
-
   private:
     ndn::Face& m_face;
     ndn::Name m_syncPrefix;
     uint32_t m_expectedNumEntries;
-    uint32_t m_lastNonce{};
     ndn::security::v2::Validator& m_validator;
     ndn::Scheduler m_scheduler;
-    std::shared_ptr<const ndn::Interest> m_lastInterest;
+    std::map<const Name, ndn::time::system_clock::TimePoint> m_interests{};
     IBLT m_iblt;
     ndn::KeyChain m_keyChain;
     SigningInfo m_signingInfo;
     // currently active published items
-    std::unordered_map<std::shared_ptr<const Publication>, uint8_t> m_active;
-    std::unordered_map<uint32_t, std::shared_ptr<const Publication>> m_hash2pub;
-    std::map<const Name, UpdateCb> m_subscription;
+    std::unordered_map<std::shared_ptr<const Publication>, uint8_t> m_active{};
+    std::unordered_map<uint32_t, std::shared_ptr<const Publication>> m_hash2pub{};
+    std::map<const Name, UpdateCb> m_subscription{};
     IsExpiredCb m_isExpired;
     ndn::time::milliseconds m_syncInterestLifetime;
     ndn::scheduler::ScopedEventId m_scheduledSyncInterestId;
+    //ndn::ScopedPendingInterestHandle m_interest;
     ndn::ScopedRegisteredPrefixHandle m_registeredPrefix;
+    uint32_t m_publications{};  // # local publications
+    uint32_t m_interestsSent{};
+    bool m_delivering{false};   // currently processing a Data
     bool m_registering{true};
 };
 

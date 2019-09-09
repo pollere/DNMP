@@ -94,7 +94,7 @@ static void blackholeReply(const Reply& r, CRshim& shim)
               << to_string(r.timeDelta("rTimestamp")) << " from." << std::endl;
     nReply++;
     const auto& c = r.getContent();
-    if(c.value_size() > 0) {
+    if(!c.empty()) {
         std::cout << "\tHas route to: " <<
             std::string((const char*)(c.value()), c.value_size()) << std::endl;
     } else {

@@ -73,11 +73,6 @@ static void help(const char* cname)
            "  -h |--help           print help then exit\n";
 }
 
-/*
- * doFinish is the callback function for the timer
- * and is also called if the target is local and just one NOD
- * so that the client will exit.
-*/
 
 static int debug = 0;
 static int count = 1;
@@ -87,6 +82,11 @@ static std::string ptype;
 static std::string pargs;
 static Timer timer;
 
+/*
+ * doFinish is the callback function for the timer
+ * and is also called if the target is local and just one NOD
+ * so that the client will exit.
+ */
 void doFinish()
 {
     exit(0);
@@ -96,7 +96,6 @@ void doFinish()
  * the reply from the NOD probe. This is the callback function for
  * reception of a reply from a nod.
  */
-
 void processReply(const Reply& pub, CRshim& shim)
 {
     const auto& c = pub.getContent();
@@ -105,7 +104,7 @@ void processReply(const Reply& pub, CRshim& shim)
     }
 
     // Using the reply timestamps to print cli-to-nod & nod-to-cli times
-    std::cout << "Reply timing (in sec.): "
+    std::cout << "Reply from " << pub["rSrcId"] << ": timing (in sec.): "
               << "to NOD=" + to_string(pub.timeDelta("rTimestamp", "cTimestamp"))
               << "  from NOD=" + to_string(pub.timeDelta("rTimestamp")) << std::endl;
 
@@ -129,7 +128,7 @@ void processReply(const Reply& pub, CRshim& shim)
  * and prints the reply.
  * Other probes can be modeled on this template but may do formating
  * or other operations on the reply.
-*/
+ */
 int main(int argc, char* argv[])
 {
     // parse input line, exit if not a good probe directive
