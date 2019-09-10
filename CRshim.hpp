@@ -212,13 +212,13 @@ class CRshim
      * Construct the NDN name prefix to use for syncps communication
      * with application-level target 't'. In the POC this is a fixed
      * mapping with 'local' mapping to "/localhost/dnmp" and anything
-     * else mapping to "/localnet/dnmp".
+     * else mapping to "/localnet/dnmp/<t>"
      * (In the trust-schema-based shim, this mapping is described
      * in a site-specific trust schema.)
      */
     static std::string targetToPrefix(const std::string& t)
     {
-        return t == "local"? "/localhost/dnmp" : "/localnet/dnmp";
+        return t == "local"? "/localhost/dnmp" : "localnet/dnmp/" + t;
     }
     static std::string addHostname(const char* sep, std::string id)
     {

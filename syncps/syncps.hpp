@@ -121,7 +121,7 @@ class SyncPubsub
           m_registeredPrefix(m_face.setInterestFilter(
               ndn::InterestFilter(m_syncPrefix).allowLoopback(false),
               [this](auto f, auto i) { onSyncInterest(f, i); },
-              [this](auto n) { m_registering = false; reExpressSyncInterest(); },
+              [this](auto n) { m_registering = false; sendSyncInterest(); },
               [this](auto n, auto s) { onRegisterFailed(n, s); },
               m_signingInfo))
     { }
@@ -145,6 +145,7 @@ class SyncPubsub
             addToActive(pub, true);
             // new pub may let us respond to pending interest(s).
             if (! m_delivering) {
+                sendSyncInterest();
                 handleInterests();
             }
         }
@@ -292,11 +293,12 @@ class SyncPubsub
 
         // Build and ship the interest. Format is
         // /<sync-prefix>/<ourLatestIBF>
-        ndn::Name syncInterestName = m_syncPrefix;
-        m_iblt.appendToName(syncInterestName);
+        ndn::Name name = m_syncPrefix;
+        m_iblt.appendToName(name);
 
-        ndn::Interest syncInterest(syncInterestName);
-        syncInterest.setNonce(ndn::random::generateWord32())
+        ndn::Interest syncInterest(name);
+        m_currentInterest = ndn::random::generateWord32();
+        syncInterest.setNonce(m_currentInterest)
             .setCanBePrefix(true)
             .setMustBeFresh(true)
             .setInterestLifetime(m_syncInterestLifetime);
@@ -309,8 +311,7 @@ class SyncPubsub
                 [this](auto i) { onInterestTimeout(i); });
         ++m_interestsSent;
         NDN_LOG_DEBUG("sendSyncInterest " << std::hex
-                      << syncInterest.getNonce() << "/"
-                      << std::hash<ndn::Name>{}(syncInterestName));
+                      << m_currentInterest << "/" << hashIBLT(name));
     }
 
     /**
@@ -336,8 +337,8 @@ class SyncPubsub
     void onSyncInterest(const ndn::Name& prefixName, const ndn::Interest& interest)
     {
         const ndn::Name& interestName = interest.getName();
-        NDN_LOG_TRACE("onSyncInterest " << std::hex << interest.getNonce() << "/"
-                      << std::hash<ndn::Name>{}(interestName));
+        NDN_LOG_DEBUG("onSyncInterest " << std::hex << interest.getNonce() << "/"
+                      << hashIBLT(interestName));
 
         if (interestName.size() - prefixName.size() != 1) {
             NDN_LOG_INFO("invalid sync interest: " << interest);
@@ -353,6 +354,7 @@ class SyncPubsub
 
     void handleInterests()
     {
+        NDN_LOG_DEBUG("handleInterests");
         auto now = ndn::time::system_clock::now();
         for (auto i = m_interests.begin(); i != m_interests.end(); ) {
             const auto& [name, expires] = *i;
@@ -380,7 +382,8 @@ class SyncPubsub
         std::set<uint32_t> have;
         std::set<uint32_t> need;
         (m_iblt - iblt).listEntries(have, need);
-        NDN_LOG_DEBUG("need " << need.size() << ", have " << have.size());
+        NDN_LOG_DEBUG("handleInterest " << std::hex << hashIBLT(name)
+                      << " need " << need.size() << ", have " << have.size());
 
         // If we have things the other side doesn't, send as many as
         // will fit in one Data. Make two lists of needed, active publications:
@@ -434,7 +437,6 @@ class SyncPubsub
         if (pubs.empty()) {
             return false;
         }
-        sendSyncInterest();
         pubs.encode();
         sendSyncData(name, pubs);
         return true;
@@ -452,7 +454,6 @@ class SyncPubsub
      */
     void sendSyncData(const ndn::Name& name, const ndn::Block& pubs)
     {
-
         NDN_LOG_DEBUG("sendSyncData: " << name);
         std::shared_ptr<ndn::Data> data = std::make_shared<ndn::Data>();
         data->setName(name).setContent(pubs).setFreshnessPeriod(maxPubLifetime / 2);
@@ -466,7 +467,6 @@ class SyncPubsub
      * Add each item in Data content that we don't have to
      * our list of active publications then notify the
      * application about the updates.
-     * sendSyncInterest because the last one was satisfied by the incoming data
      *
      * @param interest interest for which we got the data
      * @param data     sync data content
@@ -474,7 +474,7 @@ class SyncPubsub
     void onValidData(const ndn::Interest& interest, const ndn::Data& data)
     {
         NDN_LOG_DEBUG("onValidData: " << std::hex << interest.getNonce() << "/"
-                       << std::hash<ndn::Name>{}(interest.getName())
+                       << hashIBLT(interest.getName())
                        << " " << data.getName());
 
         const ndn::Block& pubs(data.getContent().blockFromValue());
@@ -526,20 +526,19 @@ class SyncPubsub
             }
         }
 
+        // We've delivered all the publications in the Data.
+        // If this is our currently active sync interest, send an
+        // interest to replace the one consumed by the Data.
         // If deliveries resulted in new publications, try to satisfy
-        // pending peer interests (which may result in us sending
-        // a new interest).  If no Interest is sent, send one to replace
-        // the one consumed by this Data.
+        // pending peer interests.
         m_delivering = false;
-        auto isent = m_interestsSent;
+        if (interest.getNonce() == m_currentInterest) {
+            sendSyncInterest();
+        }
         if (initpubs != m_publications) {
             handleInterests();
         }
-        if (isent == m_interestsSent) {
-            sendSyncInterest();
-        }
     }
-
 
     /**
      * @brief Methods to manage the active publication set.
@@ -635,6 +634,13 @@ class SyncPubsub
         BOOST_THROW_EXCEPTION(Error(msg));
     }
 
+    uint32_t hashIBLT(const Name& n) const
+    {
+        const auto& b = n[-1].wireEncode();
+        return murmurHash3(N_HASHCHECK,
+                           std::vector<uint8_t>(b.wire(), b.wire() + b.size()));
+    }
+
   private:
     ndn::Face& m_face;
     ndn::Name m_syncPrefix;
@@ -654,9 +660,10 @@ class SyncPubsub
     ndn::scheduler::ScopedEventId m_scheduledSyncInterestId;
     //ndn::ScopedPendingInterestHandle m_interest;
     ndn::ScopedRegisteredPrefixHandle m_registeredPrefix;
-    uint32_t m_publications{};  // # local publications
+    uint32_t m_currentInterest{};   // nonce of current sync interest
+    uint32_t m_publications{};      // # local publications
     uint32_t m_interestsSent{};
-    bool m_delivering{false};   // currently processing a Data
+    bool m_delivering{false};       // currently processing a Data
     bool m_registering{true};
 };
 
