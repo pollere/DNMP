@@ -61,12 +61,17 @@ constexpr ndn::time::milliseconds maxClockSkew = 1_s;
  * @brief app callback when new publications arrive
  */
 using UpdateCb = std::function<void(const Publication&)>;
-using UpdateCallback = UpdateCb; /*XXX*/
 
 /**
  * @brief app callback to test if publication is expired
  */
 using IsExpiredCb = std::function<bool(const Publication&)>;
+/**
+ * @brief app callback to filter peer publication requests
+ */
+using PubPtr = std::shared_ptr<const Publication>;
+using VPubPtr = std::vector<PubPtr>;
+using FilterPubsCb = std::function<VPubPtr(VPubPtr&,VPubPtr&)>;
 
 /**
  * @brief sync a lifetime-bounded set of publications among
@@ -104,6 +109,7 @@ class SyncPubsub
      * @param expectedNumEntries expected entries in IBF
      */
     SyncPubsub(ndn::Face& face, Name syncPrefix,
+        IsExpiredCb isExpired, FilterPubsCb filterPubs,
         ndn::time::milliseconds syncInterestLifetime = 4_s,
         size_t expectedNumEntries = 85)  // = 128/1.5 (see detail/iblt.hpp)
         : m_face(face),
@@ -113,10 +119,7 @@ class SyncPubsub
           m_scheduler(m_face.getIoService()),
           m_iblt(expectedNumEntries),
           m_signingInfo(ndn::security::SigningInfo::SIGNER_TYPE_SHA256),
-          m_isExpired{[](auto p) {
-              auto dt = ndn::time::system_clock::now() - p.getName()[-1].toTimestamp();
-              return dt >= maxPubLifetime+maxClockSkew || dt <= -maxClockSkew;
-          }},
+          m_isExpired(isExpired), m_filterPubs{filterPubs},
           m_syncInterestLifetime(syncInterestLifetime),
           m_registeredPrefix(m_face.setInterestFilter(
               ndn::InterestFilter(m_syncPrefix).allowLoopback(false),
@@ -160,7 +163,7 @@ class SyncPubsub
      *
      * @param  topic the topic
      */
-    SyncPubsub& subscribeTo(const Name& topic, const UpdateCallback cb)
+    SyncPubsub& subscribeTo(const Name& topic, const UpdateCb cb)
     {
         // add to subscription dispatch table. NOTE that an existing
         // subscription to 'topic' will be changed to the new callback.
@@ -192,22 +195,6 @@ class SyncPubsub
     {
         m_syncInterestLifetime = t;
         return *this;
-    }
-
-    /**
-     * @brief set 'isExpired' callback
-     *
-     * @param  cb the callback function
-     */
-    SyncPubsub& setIsExpiredCb(IsExpiredCb cb)
-    {
-        m_isExpired = cb;
-        return *this;
-    }
-
-    auto isExpired(const Publication& pub) const
-    {
-        return m_isExpired(pub);
     }
 
     /**
@@ -336,19 +323,23 @@ class SyncPubsub
      */
     void onSyncInterest(const ndn::Name& prefixName, const ndn::Interest& interest)
     {
-        const ndn::Name& interestName = interest.getName();
+        if (interest.getNonce() == m_currentInterest) {
+            // library looped back our interest
+            return;
+        }
+        const ndn::Name& name = interest.getName();
         NDN_LOG_DEBUG("onSyncInterest " << std::hex << interest.getNonce() << "/"
-                      << hashIBLT(interestName));
+                      << hashIBLT(name));
 
-        if (interestName.size() - prefixName.size() != 1) {
+        if (name.size() - prefixName.size() != 1) {
             NDN_LOG_INFO("invalid sync interest: " << interest);
             return;
         }
-        if (!  handleInterest(interestName)) {
+        if (!  handleInterest(name)) {
             // couldn't handle interest immediately - remember it until
             // we satisfy it or it times out;
-            m_interests[interestName] = ndn::time::system_clock::now() +
-                                        m_syncInterestLifetime;
+            m_interests[name] = ndn::time::system_clock::now() +
+                                    m_syncInterestLifetime;
         }
     }
 
@@ -389,53 +380,28 @@ class SyncPubsub
         // will fit in one Data. Make two lists of needed, active publications:
         // ones we published and ones published by others.
 
-        std::vector<PubPtr> pOurs;
-        std::vector<PubPtr> pOthers;
-        for (auto hash : have) {
-            auto h = m_hash2pub.find(hash);
-            if (h != m_hash2pub.end()) {
-                auto p = m_active.find(h->second);
+        VPubPtr pOurs, pOthers;
+        for (const auto hash : have) {
+            if (auto h = m_hash2pub.find(hash); h != m_hash2pub.end()) {
                 // 2^0 bit of p->second is =0 if pub expired; 2^1 bit is 1 if we
                 // did publication.
-                if (p != m_active.end() && (p->second & 1) != 0) {
+                if (const auto p = m_active.find(h->second); p != m_active.end()
+                    && (p->second & 1) != 0) {
                     ((p->second & 2) != 0? &pOurs : &pOthers)->push_back(h->second);
                 }
             }
         }
-
-        // Only reply if at least one of the pubs is ours. Order the
-        // reply by ours/others then most recent first (to minimize latency).
-        // Respond with as many pubs will fit in one Data.
-
-        if (pOurs.size() <= 0) {
+        pOurs = m_filterPubs(pOurs, pOthers);
+        if (pOurs.empty()) {
             return false;
         }
         ndn::Block pubs(tlv::syncpsContent);
-
-        auto cmp = [](const PubPtr p1, const PubPtr p2) {
-                        return p1->getName()[-1].toTimestamp() >
-                               p2->getName()[-1].toTimestamp();
-                    };
-        std::sort(pOurs.begin(), pOurs.end(), cmp);
-        for (auto p : pOurs) {
+        for (const auto& p : pOurs) {
             NDN_LOG_DEBUG("Send pub " << p->getName());
             pubs.push_back((*(p)).wireEncode());
             if (pubs.size() >= maxPubSize) {
                 break;
             }
-        }
-        if (pubs.size() < maxPubSize) {
-            std::sort(pOthers.begin(), pOthers.end(), cmp);
-            for (auto p : pOthers) {
-                NDN_LOG_DEBUG("Send pub " << p->getName());
-                pubs.push_back((*(p)).wireEncode());
-                if (pubs.size() >= maxPubSize) {
-                    break;
-                }
-            }
-        }
-        if (pubs.empty()) {
-            return false;
         }
         pubs.encode();
         sendSyncData(name, pubs);
@@ -498,7 +464,7 @@ class SyncPubsub
             }
             //XXX validate pub against schema here
             Publication pub(p);
-            if (isExpired(pub)) {
+            if (m_isExpired(pub)) {
                 NDN_LOG_DEBUG("ignore expired " << pub.getName());
                 continue;
             }
@@ -546,7 +512,6 @@ class SyncPubsub
 
     // publications are stored using a shared_ptr so we
     // get to them indirectly via their hash.
-    using PubPtr = std::shared_ptr<const Publication>;
 
     uint32_t hashPub(const Publication& pub) const
     {
@@ -656,6 +621,7 @@ class SyncPubsub
     std::unordered_map<uint32_t, std::shared_ptr<const Publication>> m_hash2pub{};
     std::map<const Name, UpdateCb> m_subscription{};
     IsExpiredCb m_isExpired;
+    FilterPubsCb m_filterPubs;
     ndn::time::milliseconds m_syncInterestLifetime;
     ndn::scheduler::ScopedEventId m_scheduledSyncInterestId;
     //ndn::ScopedPendingInterestHandle m_interest;

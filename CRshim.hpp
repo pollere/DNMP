@@ -102,10 +102,9 @@ using TimerCb = std::function<void()>;
 
 class CRshim
 {
-   public:
+  public:
     CRshim(Face& face, const std::string& target) :
-        m_face(face),
-        m_sync(m_face, targetToPrefix(target)),
+        m_face(face), m_sync(m_face, targetToPrefix(target), isExpired, filterPubs),
         m_topic{topicName(target)}
     {}
     CRshim(const std::string& target) :
@@ -205,6 +204,31 @@ class CRshim
     }
 
   protected:
+    static inline const FilterPubsCb filterPubs =
+    [](auto& pOurs, auto& pOthers) mutable {
+        // Only reply if at least one of the pubs is ours. Order the
+        // reply by ours/others then most recent first (to minimize latency).
+        // Respond with as many pubs will fit in one Data.
+        if (pOurs.size() <= 0) {
+            return pOurs;
+        }
+        const auto cmp = [](const auto p1, const auto p2) {
+            return p1->getName()[-1].toTimestamp() >
+                   p2->getName()[-1].toTimestamp();
+        };
+        if (pOurs.size() > 1) {
+            std::sort(pOurs.begin(), pOurs.end(), cmp);
+        }
+        std::sort(pOthers.begin(), pOthers.end(), cmp);
+        for (auto& p : pOthers) {
+            pOurs.push_back(p);
+        }
+        return pOurs;
+    };
+    static inline const IsExpiredCb isExpired = [](auto p) {
+        auto dt = ndn::time::system_clock::now() - p.getName()[-1].toTimestamp();
+        return dt >= maxPubLifetime+maxClockSkew || dt <= -maxClockSkew;
+    };
     // -- temporary pre-schemaLib place holders --
     // these will be replaced with trust schema library routines
     // in the next version.
