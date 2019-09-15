@@ -137,7 +137,7 @@ class SyncPubsub
      *
      * @param pub the object to publish
      */
-    SyncPubsub& publish(Publication& pub)
+    SyncPubsub& publish(Publication&& pub)
     {
         m_keyChain.sign(pub, m_signingInfo); //XXX
         if (isKnown(pub)) {
@@ -145,7 +145,7 @@ class SyncPubsub
         } else {
             NDN_LOG_INFO("Publish: " << pub.getName());
             ++m_publications;
-            addToActive(pub, true);
+            addToActive(std::forward<Publication>(pub), true);
             // new pub may let us respond to pending interest(s).
             if (! m_delivering) {
                 sendSyncInterest();
@@ -474,7 +474,6 @@ class SyncPubsub
             }
             // we don't already have this publication so deliver it
             // to the longest match subscription.
-            addToActive(pub);
             // XXX lower_bound goes one too far when doing longest
             // prefix match. It would be faster to stick a marker on
             // the end of subscription entries so this wouldn't happen.
@@ -490,6 +489,7 @@ class SyncPubsub
             } else {
                 NDN_LOG_DEBUG("no sub for  " << nm);
             }
+            addToActive(std::forward<Publication>(pub));
         }
 
         // We've delivered all the publications in the Data.
@@ -533,14 +533,14 @@ class SyncPubsub
         return isKnown(hashPub(pub));
     }
 
-    void addToActive(const Publication& pub, bool localPub = false)
+    void addToActive(Publication&& pub, bool localPub = false)
     {
-        auto p = std::make_shared<Publication>(pub);
-        m_active[p] = localPub? 3 : 1;
+        NDN_LOG_DEBUG("addToActive: " << pub.getName());
         auto hash = hashPub(pub);
+        auto p = std::make_shared<Publication>(std::move(pub));
+        m_active[p] = localPub? 3 : 1;
         m_hash2pub[hash] = p;
         m_iblt.insert(hash);
-        NDN_LOG_DEBUG("addToActive: " << pub.getName());
 
         // We remove an expired publication from our active set at twice its pub
         // lifetime (the extra time is to prevent replay attacks enabled by clock
