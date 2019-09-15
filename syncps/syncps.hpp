@@ -293,9 +293,9 @@ class SyncPubsub
                 [this](auto i, auto d) {
                     m_validator.validate(d,
                         [this, i](auto d) { onValidData(i, d); },
-                        [this](auto d, auto e) { onInvalidData(d, e); }); },
-                [this](auto i, auto n) { onNack(i, n); },
-                [this](auto i) { onInterestTimeout(i); });
+                        [](auto d, auto e) { NDN_LOG_INFO("Invalid: " << e << " Data " << d); }); },
+                [](auto i, auto n) { NDN_LOG_INFO("Nack for " << i); },
+                [](auto i) { NDN_LOG_INFO("Timeout for " << i); });
         ++m_interestsSent;
         NDN_LOG_DEBUG("sendSyncInterest " << std::hex
                       << m_currentInterest << "/" << hashIBLT(name));
@@ -421,7 +421,7 @@ class SyncPubsub
     void sendSyncData(const ndn::Name& name, const ndn::Block& pubs)
     {
         NDN_LOG_DEBUG("sendSyncData: " << name);
-        std::shared_ptr<ndn::Data> data = std::make_shared<ndn::Data>();
+        auto data = std::make_shared<ndn::Data>();
         data->setName(name).setContent(pubs).setFreshnessPeriod(maxPubLifetime / 2);
         m_keyChain.sign(*data, m_signingInfo);
         m_face.put(*data);
@@ -456,20 +456,16 @@ class SyncPubsub
         auto initpubs = m_publications;
 
         pubs.parse();
-        for (const auto& p : pubs.elements()) {
-            if (p.type() != ndn::tlv::Data) {
+        for (const auto& e : pubs.elements()) {
+            if (e.type() != ndn::tlv::Data) {
                 NDN_LOG_WARN("Sync Data with wrong Publication type " <<
-                             p.type() << " ignored.");
+                             e.type() << " ignored.");
                 continue;
             }
             //XXX validate pub against schema here
-            Publication pub(p);
-            if (m_isExpired(pub)) {
-                NDN_LOG_DEBUG("ignore expired " << pub.getName());
-                continue;
-            }
-            if (isKnown(pub)) {
-                NDN_LOG_DEBUG("ignore known " << pub.getName());
+            Publication pub(e);
+            if (m_isExpired(pub) || isKnown(pub)) {
+                NDN_LOG_DEBUG("ignore expired or known " << pub.getName());
                 continue;
             }
             // we don't already have this publication so deliver it
@@ -480,16 +476,16 @@ class SyncPubsub
             // Also, it would be faster to do the comparison on the
             // wire-format names (excluding the leading length value)
             // rather than default of component-by-component.
-            const auto& nm = pub.getName();
+            const auto& p = addToActive(std::forward<Publication>(pub));
+            const auto& nm = p->getName();
             auto sub = m_subscription.lower_bound(nm);
             if ((sub != m_subscription.end() && sub->first.isPrefixOf(nm)) ||
                 (sub != m_subscription.begin() && (--sub)->first.isPrefixOf(nm))) {
                 NDN_LOG_DEBUG("deliver " << nm << " to " << sub->first);
-                sub->second(pub);
+                sub->second(*p);
             } else {
                 NDN_LOG_DEBUG("no sub for  " << nm);
             }
-            addToActive(std::forward<Publication>(pub));
         }
 
         // We've delivered all the publications in the Data.
@@ -533,11 +529,11 @@ class SyncPubsub
         return isKnown(hashPub(pub));
     }
 
-    void addToActive(Publication&& pub, bool localPub = false)
+    std::shared_ptr<Publication> addToActive(Publication&& pub, bool localPub = false)
     {
         NDN_LOG_DEBUG("addToActive: " << pub.getName());
         auto hash = hashPub(pub);
-        auto p = std::make_shared<Publication>(std::move(pub));
+        auto p = std::make_shared<Publication>(pub);
         m_active[p] = localPub? 3 : 1;
         m_hash2pub[hash] = p;
         m_iblt.insert(hash);
@@ -553,11 +549,11 @@ class SyncPubsub
         // as we delete it.
 
         m_scheduler.schedule(maxPubLifetime, [this, p] { m_active[p] &=~ 1; });
-        m_scheduler.schedule(maxPubLifetime + maxClockSkew, [this, hash] {
-                                        m_iblt.erase(hash);
-                                        sendSyncInterestSoon();
-                                    });
+        m_scheduler.schedule(maxPubLifetime + maxClockSkew,
+            [this, hash] { m_iblt.erase(hash); sendSyncInterestSoon(); });
         m_scheduler.schedule(maxPubLifetime * 2, [this, p] { removeFromActive(p); });
+
+        return p;
     }
 
     void removeFromActive(const PubPtr& p)
@@ -565,26 +561,6 @@ class SyncPubsub
         NDN_LOG_DEBUG("removeFromActive: " << (*p).getName());
         m_active.erase(p);
         m_hash2pub.erase(hashPub(*p));
-    }
-
-    /*
-     * Miscellaneous callbacks from nfd
-     */
-
-    void onNack(const ndn::Interest& interest, const ndn::lp::Nack& /*lp*/)
-    {
-        NDN_LOG_INFO("got Nack for " << interest);
-    }
-
-    void onInterestTimeout(const ndn::Interest& interest)
-    {
-        NDN_LOG_INFO("got timeout for " << interest);
-    }
-
-    void onInvalidData(const ndn::Data& data,
-                                   const ndn::security::v2::ValidationError& error)
-    {
-        NDN_LOG_INFO("Validation error " << error << "on Data " << data);
     }
 
     /**
