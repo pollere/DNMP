@@ -1,25 +1,36 @@
 # on a mac need to set PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-CCFLAGS = -g -O2 -I. -Wall -std=c++17
-CCFLAGS += $(shell pkg-config --cflags libndn-cxx)
-LIBS = $(shell pkg-config --libs libndn-cxx) -lboost_iostreams-mt
+# the code *requires* C++ 17 or later
+CXXFLAGS = -g -O2 -I. -Wall -std=c++17
+CXXFLAGS += $(shell pkg-config --cflags libndn-cxx)
+LIBS = $(shell pkg-config --libs libndn-cxx)
 HDRS = CRshim.hpp syncps/syncps.hpp syncps/iblt.hpp
 DEPS = $(HDRS)
+BINS = genericCLI nod bhClient
+JUNK = 
 
-all: genericCLI nod bhClient
+# OS dependent definitions
+ifeq ($(shell uname -s),Darwin)
+LIBS += -lboost_iostreams-mt
+JUNK += $(addsuffix .dSYM,$(BINS))
+else
+LIBS += -lboost_iostreams
+endif
+
+all: $(BINS)
 
 .PHONY: clean distclean tags
 
 genericCLI: generic-client.cpp $(DEPS)
-	$(CXX) $(CCFLAGS) -o $@ $< $(LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LIBS)
 
 bhClient: bh-client.cpp $(DEPS)
-	$(CXX) $(CCFLAGS) -o $@ $< $(LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LIBS)
 
 nod: nod.cpp probes.hpp $(DEPS)
-	$(CXX) $(CCFLAGS) -o $@ $< $(LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LIBS)
 
 clean:
-	rm -f genericCLI bhClient nod
+	rm -f $(BINS)
 
 distclean: clean
-	rm -rf genericCLI.dSYM bhClient.dSYM nod.dSYM
+	rm -rf $(JUNK)
