@@ -51,10 +51,6 @@ struct RName : public Name {
     {
         return at(m_n2i.at(s));
     }
-    const name::Component& operator[](const char* s) const
-    {
-        return at(m_n2i.at(s));
-    }
   private:
     // XXX temporary placeholder component name to index map. Will be
     // replaced by schema-based version for release.
@@ -70,6 +66,8 @@ struct RName : public Name {
     };
 };
 struct Reply : public Publication {
+    using Publication::Publication;
+
     const RName& name() const { return (const RName&)(Publication::getName()); }
 
     template <typename T>
