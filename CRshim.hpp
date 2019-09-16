@@ -33,50 +33,27 @@
  */
 
 #include <utility>
-//#include <unistd.h>
 #include "syncps/syncps.hpp"
 
 using namespace syncps;
 using namespace ndn;
 
-struct Reply : public Publication {
-    /**
-     * @brief Name-based accessors for Reply name components.
-     *
-     * These use the schema string table to map a component's name to
-     * it's index in that publication.
-     */
+/**
+ * @brief Name-based accessors for Reply name components.
+ *
+ * These use the schema string table to map a component's name to
+ * its index in that publication.
+ */
+struct RName : public Name {
+    using Name::Name;
+
     const name::Component& operator[](std::string_view s) const
     {
-        return getName()[m_n2i.at(s)];
+        return at(m_n2i.at(s));
     }
-
-    /*
-     * return the time difference (in seconds) between timepoint 'tp'
-     * and the timepoint in component 'idx' this pub's name
-     */
-    double timeDelta(int indx, time::system_clock::time_point tp =
-                                time::system_clock::now()) const {
-
-        return boost::chrono::duration_cast<boost::chrono::duration<double>>
-                (tp - getName()[indx].toTimestamp()).count();
-    }
-    double timeDelta(std::string_view s, time::system_clock::time_point tp =
-                                time::system_clock::now()) const {
-        return timeDelta(m_n2i.at(s), tp);
-    }
-
-    /*
-     * return the time difference (in seconds) between 
-     * the timepoints in components 'l' and 'f' this pub's name
-     */
-    double timeDelta(int l, int f) const {
-        auto name = getName();
-        return boost::chrono::duration_cast<boost::chrono::duration<double>>
-                (name[l].toTimestamp() - name[f].toTimestamp()).count();
-    }
-    double timeDelta(std::string_view sl, std::string_view sf) const {
-        return timeDelta(m_n2i.at(sl), m_n2i.at(sf));
+    const name::Component& operator[](const char* s) const
+    {
+        return at(m_n2i.at(s));
     }
   private:
     // XXX temporary placeholder component name to index map. Will be
@@ -92,11 +69,40 @@ struct Reply : public Publication {
         { "role", -9 },
     };
 };
+struct Reply : public Publication {
+    const RName& name() const { return (const RName&)(Publication::getName()); }
+
+    template <typename T>
+    const name::Component& operator[](T t) const { return name()[t]; }
+
+    /*
+     * return the time difference (in seconds) between timepoint 'tp'
+     * and the timepoint in component 'idx' this pub's name
+     */
+    template <typename T>
+    double timeDelta(T t, time::system_clock::time_point tp =
+                                time::system_clock::now()) const
+    {
+        return boost::chrono::duration_cast<boost::chrono::duration<double>>
+                (tp - name()[t].toTimestamp()).count();
+    }
+
+    /*
+     * return the time difference (in seconds) between 
+     * the timepoints in components 'l' and 'f' this pub's name
+     */
+    template <typename T>
+    double timeDelta(T l, T f) const
+    {
+        return boost::chrono::duration_cast<boost::chrono::duration<double>>
+                (name()[l].toTimestamp() - name()[f].toTimestamp()).count();
+    }
+};
 
 class CRshim;
 
 using rpHndlr = std::function<void(const Reply&, CRshim&)>;
-using cmHndlr = std::function<void(Name&&, CRshim&)>;
+using cmHndlr = std::function<void(RName&&, CRshim&)>;
 using Timer = ndn::scheduler::ScopedEventId;
 using TimerCb = std::function<void()>;
 
@@ -187,13 +193,13 @@ class CRshim
      * Construct the 'reply' topic Name expected for a particular 'command'.
      * Used for both NODs and Clients so doesn't add replySrcID or timestamp
      */
-    Name expectedReply(const Publication& pub)
+    RName expectedReply(const Publication& pub)
     {
         size_t n = prefix().size() - 4;
         const auto& cmd = pub.getName();
-        Name reply(cmd.getPrefix(n));
-        reply.append("reply").append(cmd.getSubName(n + 1));
-        return reply;
+        RName r;
+        r.append(cmd.getPrefix(n)).append("reply").append(cmd.getSubName(n + 1));
+        return r;
     }
 
     static std::string myPID()
