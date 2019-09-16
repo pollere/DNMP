@@ -119,12 +119,12 @@ class SyncPubsub
           m_scheduler(m_face.getIoService()),
           m_iblt(expectedNumEntries),
           m_signingInfo(ndn::security::SigningInfo::SIGNER_TYPE_SHA256),
-          m_isExpired(isExpired), m_filterPubs{filterPubs},
+          m_isExpired{std::move(isExpired)}, m_filterPubs{std::move(filterPubs)},
           m_syncInterestLifetime(syncInterestLifetime),
           m_registeredPrefix(m_face.setInterestFilter(
               ndn::InterestFilter(m_syncPrefix).allowLoopback(false),
               [this](auto f, auto i) { onSyncInterest(f, i); },
-              [this](auto n) { m_registering = false; sendSyncInterest(); },
+              [this](auto/*n*/) { m_registering = false; sendSyncInterest(); },
               [this](auto n, auto s) { onRegisterFailed(n, s); },
               m_signingInfo))
     { }
@@ -163,7 +163,7 @@ class SyncPubsub
      *
      * @param  topic the topic
      */
-    SyncPubsub& subscribeTo(const Name& topic, const UpdateCb cb)
+    SyncPubsub& subscribeTo(const Name& topic, UpdateCb&& cb)
     {
         // add to subscription dispatch table. NOTE that an existing
         // subscription to 'topic' will be changed to the new callback.
@@ -222,7 +222,7 @@ class SyncPubsub
      *
      * @param si a valid ndn::Security::SigningInfo 
      */
-    SyncPubsub& setSigningInfo(const SigningInfo si)
+    SyncPubsub& setSigningInfo(const SigningInfo& si)
     {
         m_signingInfo = si;
         return *this;
@@ -294,7 +294,7 @@ class SyncPubsub
                     m_validator.validate(d,
                         [this, i](auto d) { onValidData(i, d); },
                         [](auto d, auto e) { NDN_LOG_INFO("Invalid: " << e << " Data " << d); }); },
-                [](auto i, auto n) { NDN_LOG_INFO("Nack for " << i); },
+                [](auto i, auto/*n*/) { NDN_LOG_INFO("Nack for " << i); },
                 [](auto i) { NDN_LOG_INFO("Timeout for " << i); });
         ++m_interestsSent;
         NDN_LOG_DEBUG("sendSyncInterest " << std::hex
@@ -386,8 +386,8 @@ class SyncPubsub
                 // 2^0 bit of p->second is =0 if pub expired; 2^1 bit is 1 if we
                 // did publication.
                 if (const auto p = m_active.find(h->second); p != m_active.end()
-                    && (p->second & 1) != 0) {
-                    ((p->second & 2) != 0? &pOurs : &pOthers)->push_back(h->second);
+                    && (p->second & 1U) != 0) {
+                    ((p->second & 2U) != 0? &pOurs : &pOthers)->push_back(h->second);
                 }
             }
         }
@@ -548,7 +548,7 @@ class SyncPubsub
         // interval to prevent a peer with a late clock giving it back to us as soon
         // as we delete it.
 
-        m_scheduler.schedule(maxPubLifetime, [this, p] { m_active[p] &=~ 1; });
+        m_scheduler.schedule(maxPubLifetime, [this, p] { m_active[p] &=~ 1U; });
         m_scheduler.schedule(maxPubLifetime + maxClockSkew,
             [this, hash] { m_iblt.erase(hash); sendSyncInterestSoon(); });
         m_scheduler.schedule(maxPubLifetime * 2, [this, p] { removeFromActive(p); });

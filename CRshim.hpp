@@ -1,3 +1,5 @@
+#ifndef CRSHIM_HPP
+#define CRSHIM_HPP
 /*
  * CRshim.hpp: Command-Reply DNMP shim
  *
@@ -31,7 +33,7 @@
  */
 
 #include <utility>
-#include <unistd.h>
+//#include <unistd.h>
 #include "syncps/syncps.hpp"
 
 using namespace syncps;
@@ -113,7 +115,7 @@ class CRshim
         CRshim(s1.m_face, target) {}
 
     void run() { m_face.processEvents(); }
-    const auto prefix() { return m_topic; }
+    auto prefix() const { return m_topic; }
 
     /* command/reply client methods */
 
@@ -136,8 +138,8 @@ class CRshim
         const rpHndlr& rh)
     { 
         auto cmd(buildCmd(ptype, pargs));
-        m_sync.subscribeTo(expectedReply(cmd),
-                           [this,rh](auto r){ rh((const Reply&)r,*this); });
+        m_sync.subscribeTo(expectedReply(cmd), 
+            [this,rh](auto r){ rh((const Reply&)(r),*this); });
         m_sync.publish(std::forward<Publication>(cmd));
         return *this;
     }
@@ -205,26 +207,26 @@ class CRshim
 
   protected:
     static inline const FilterPubsCb filterPubs =
-    [](auto& pOurs, auto& pOthers) mutable {
-        // Only reply if at least one of the pubs is ours. Order the
-        // reply by ours/others then most recent first (to minimize latency).
-        // Respond with as many pubs will fit in one Data.
-        if (pOurs.size() <= 0) {
+        [](auto& pOurs, auto& pOthers) mutable {
+            // Only reply if at least one of the pubs is ours. Order the
+            // reply by ours/others then most recent first (to minimize latency).
+            // Respond with as many pubs will fit in one Data.
+            if (pOurs.empty()) {
+                return pOurs;
+            }
+            const auto cmp = [](const auto p1, const auto p2) {
+                return p1->getName()[-1].toTimestamp() >
+                       p2->getName()[-1].toTimestamp();
+            };
+            if (pOurs.size() > 1) {
+                std::sort(pOurs.begin(), pOurs.end(), cmp);
+            }
+            std::sort(pOthers.begin(), pOthers.end(), cmp);
+            for (auto& p : pOthers) {
+                pOurs.push_back(p);
+            }
             return pOurs;
-        }
-        const auto cmp = [](const auto p1, const auto p2) {
-            return p1->getName()[-1].toTimestamp() >
-                   p2->getName()[-1].toTimestamp();
         };
-        if (pOurs.size() > 1) {
-            std::sort(pOurs.begin(), pOurs.end(), cmp);
-        }
-        std::sort(pOthers.begin(), pOthers.end(), cmp);
-        for (auto& p : pOthers) {
-            pOurs.push_back(p);
-        }
-        return pOurs;
-    };
     static inline const IsExpiredCb isExpired = [](auto p) {
         auto dt = ndn::time::system_clock::now() - p.getName()[-1].toTimestamp();
         return dt >= maxPubLifetime+maxClockSkew || dt <= -maxClockSkew;
@@ -276,8 +278,11 @@ class CRshim
         return p;
     }
     // -- end of place holders --
-
+  private:
     Face& m_face;
     SyncPubsub m_sync;
     Name m_topic;     // full name of the topic
 };
+
+#endif // CRSHIM_CPP
+#define SYNCPS_SYNCPS_HPP
