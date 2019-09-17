@@ -96,7 +96,7 @@ void processReply(const Reply& pub, CRshim& shim)
         std::cout << std::string((const char*)(c.value()), c.value_size()) << "\n";
     }
 
-    // Using the reply timestamps to print cli-to-nod & nod-to-cli times
+    // Using the reply timestamps to print client-to-nod & nod-to-client times
     std::cout << "Reply from " << pub["rSrcId"] << ": timing (in sec.): "
               << "to NOD=" + to_string(pub.timeDelta("rTimestamp", "cTimestamp"))
               << "  from NOD=" + to_string(pub.timeDelta("rTimestamp")) << std::endl;
