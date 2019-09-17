@@ -49,6 +49,7 @@ static struct option opts[] = {
     {"probe", required_argument, nullptr, 'p'},
     {"arguments", required_argument, nullptr, 'a'},
     {"target", required_argument, nullptr, 't'},
+    {"wait", required_argument, nullptr, 'i'},
     {"interval", required_argument, nullptr, 'i'},
     {"count", required_argument, nullptr, 'c'},
     {"debug", no_argument, nullptr, 'd'},
@@ -69,6 +70,7 @@ static void help(const char* cname)
            "\n"
            "  -c |--count          number of requests to send\n"
            "  -i |--interval       time between requests (sec)\n"
+           "  -w |--wait           time to wait for replies\n"
            "  -d |--debug          enable debugging output\n"
            "  -h |--help           print help then exit\n";
 }
@@ -77,29 +79,20 @@ static void help(const char* cname)
 static int debug = 0;
 static int count = 1;
 static ndn::time::nanoseconds interval = 1_s;
+static ndn::time::nanoseconds replyWait = 1_s;
 static std::string target("local");
 static std::string ptype;
 static std::string pargs;
 static Timer timer;
 
-/*
- * doFinish is the callback function for the timer
- * and is also called if the target is local and just one NOD
- * so that the client will exit.
- */
-void doFinish()
-{
-    exit(0);
-}
 
-/* processReply contains the code for how this client will process
- * the reply from the NOD probe. This is the callback function for
- * reception of a reply from a nod.
+/*
+ * processReply handles each reply to a NOD probe command.
+ * It's a callback set in the call to issueCmd.
  */
 void processReply(const Reply& pub, CRshim& shim)
 {
-    const auto& c = pub.getContent();
-    if (c.value_size() > 0) {
+    if (const auto& c = pub.getContent(); c.value_size() > 0) {
         std::cout << std::string((const char*)(c.value()), c.value_size()) << "\n";
     }
 
@@ -107,20 +100,20 @@ void processReply(const Reply& pub, CRshim& shim)
     std::cout << "Reply from " << pub["rSrcId"] << ": timing (in sec.): "
               << "to NOD=" + to_string(pub.timeDelta("rTimestamp", "cTimestamp"))
               << "  from NOD=" + to_string(pub.timeDelta("rTimestamp")) << std::endl;
+}
 
+/*
+ * send a command and schedule sending the next
+ */
+void sendCommand(CRshim& shim)
+{
+    shim.issueCmd(ptype, pargs, processReply);
     if (--count > 0) {
         // wait then launch another command
-        timer = shim.schedule(interval, [&shim]() {
-            shim.issueCmd(ptype, pargs, processReply);
-        });
-        return;
+        timer = shim.schedule(interval, [&shim](){ sendCommand(shim); });
+    } else {
+        timer = shim.schedule(replyWait, [](){ exit(0); });
     }
-    if (target == "all") {
-        // wait for more replies
-        timer = shim.schedule(interval, []() { doFinish(); });
-        return;
-    }
-    doFinish();
 }
 
 /*
@@ -137,8 +130,10 @@ int main(int argc, char* argv[])
         return 1;
     }
     for (int c;
-         (c = getopt_long(argc, argv, "p:a:t:c:i:dh", opts, nullptr)) != -1;) {
+         (c = getopt_long(argc, argv, "p:a:t:c:i:w:dh", opts, nullptr)) != -1;) {
         switch (c) {
+            int rint;
+            double rdbl;
         case 'p':
             ptype = optarg;
             break;
@@ -149,17 +144,21 @@ int main(int argc, char* argv[])
             target = optarg;
             break;
         case 'c':
-            int rint;
             if (auto [p,ec] = std::from_chars(optarg, optarg+strlen(optarg), rint);
                 ec == std::errc() && rint >= 1 && rint <= 10000) {
                 count = rint;
             }
             break;
         case 'i':
-            double rdbl;
             rdbl = std::stod(optarg);
             if (rdbl >= 0.01) {
                 interval = boost::chrono::nanoseconds((int)(rdbl * 1e9));
+            }
+            break;
+        case 'w':
+            rdbl = std::stod(optarg);
+            if (rdbl >= 0.1) {
+                replyWait = boost::chrono::nanoseconds((int)(rdbl * 1e9));
             }
             break;
         case 'd':
@@ -179,7 +178,8 @@ int main(int argc, char* argv[])
         // make a CRshim with this target
         CRshim s(target);
         // builds and publishes command and waits for reply
-        s.doCommand(ptype, pargs, processReply);
+        sendCommand(s);
+        s.run();
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
     }
