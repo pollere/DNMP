@@ -144,7 +144,7 @@ class CRshim
         auto cmd(buildCmd(ptype, pargs));
         m_sync.subscribeTo(expectedReply(cmd), 
             [this,rh](auto r){ rh((const Reply&)(r),*this); });
-        m_sync.publish(std::forward<Publication>(cmd));
+        m_sync.publish(std::move(cmd));
         return *this;
     }
 
@@ -170,9 +170,8 @@ class CRshim
     {
         // append nod id & timestamp to reply name then publish reply
         n.append(Name::Component(myPID())).appendTimestamp();
-        Publication reply(n);
-        reply.setContent((const uint8_t*)(rv.data()), rv.size());
-        m_sync.publish(std::forward<Publication>(reply));
+        Publication r(n);
+        m_sync.publish(std::move(r.setContent((const uint8_t*)(rv.data()), rv.size())));
     }
 
     /*

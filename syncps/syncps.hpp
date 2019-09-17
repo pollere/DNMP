@@ -145,7 +145,7 @@ class SyncPubsub
         } else {
             NDN_LOG_INFO("Publish: " << pub.getName());
             ++m_publications;
-            addToActive(std::forward<Publication>(pub), true);
+            addToActive(std::move(pub), true);
             // new pub may let us respond to pending interest(s).
             if (! m_delivering) {
                 sendSyncInterest();
@@ -476,7 +476,7 @@ class SyncPubsub
             // Also, it would be faster to do the comparison on the
             // wire-format names (excluding the leading length value)
             // rather than default of component-by-component.
-            const auto& p = addToActive(std::forward<Publication>(pub));
+            const auto& p = addToActive(std::move(pub));
             const auto& nm = p->getName();
             auto sub = m_subscription.lower_bound(nm);
             if ((sub != m_subscription.end() && sub->first.isPrefixOf(nm)) ||
