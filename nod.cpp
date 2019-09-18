@@ -43,15 +43,15 @@
 
 #include "probes.hpp"
 
-using pb_f = std::function<std::string(std::string)>;
+using pb_f = std::function<std::string(const std::string&)>;
 
-static const std::unordered_map<std::string, pb_f> probeTable = {
-    {"perNFDGS", periodicProbe},
-    {"NFDStrategy", nfdStrategyProbe},
-    {"NFDRIB", nfdRIBProbe},
-    {"NFDGeneralStatus", nfdGSProbe},
-    {"NFDFaceStatus", nfdFSProbe},
-    {"Pinger", echoProbe}
+const static std::unordered_map<std::string, pb_f> probeTable = {
+    {"perNFDGS"s, periodicProbe},
+    {"NFDStrategy"s, nfdStrategyProbe},
+    {"NFDRIB"s, nfdRIBProbe},
+    {"NFDGeneralStatus"s, nfdGSProbe},
+    {"NFDFaceStatus"s, nfdFSProbe},
+    {"Pinger"s, echoProbe}
 };
 
 static int debug{};
@@ -62,13 +62,10 @@ static int debug{};
  * This could require a different shim and different type of publication.
  * Asynchronous probes can publish a reply with the location of their output.
  */
-static void probeDispatch(Name&& r, CRshim& shim)
+static void probeDispatch(RName&& r, CRshim& shim)
 {
     try {
-        //shim.sendReply(r, probeTable.at(r["pType"])(r["pArgs"]));
-        std::string pa((const char*)r[-2].value(), 0, r[-2].value_size());
-        std::string pn((const char*)r[-3].value(), 0, r[-3].value_size());
-        shim.sendReply(r, probeTable.at(pn)(pa));
+        shim.sendReply(r, probeTable.at(r.str("pType"))(r.str("pArgs")));
     } catch (const std::exception& e) {
         std::cerr << e.what() << " for: " << r << std::endl;
     }

@@ -31,7 +31,7 @@
  */
 
 //Pinger Client just uses timestamps from Publication name so do nothing
-const std::string echoProbe(std::string args) {
+static std::string echoProbe(const std::string& args) {
     if(!args.empty())
         LOG("echoProbe: nonempty argument is ignored");
     return std::string("");
@@ -108,7 +108,7 @@ namespace ndn {
  * returning all.
  */
 
-const std::set<std::string> GSmetrics = {
+static const std::set<std::string> GSmetrics = {
     "NfdVersion",
     "StartTimestamp",
     "CurrentTimestamp",
@@ -126,16 +126,15 @@ const std::set<std::string> GSmetrics = {
     "all"
 };
 
-const std::string nfdGSProbe(std::string args) {
+static std::string nfdGSProbe(const std::string& args) {
     //use NFD management commands
     //get the type of NFDGeneralStatus metric
-    LOG("nfdGSProbe to get metric " + args);
-    if(args.empty())
-        args.assign("all");
+    auto a = args.empty()? "all"s : args;
+    LOG("nfdGSProbe to get metric " + a);
 
-    if(GSmetrics.find(args) == GSmetrics.end()) {
+    if(GSmetrics.find(a) == GSmetrics.end()) {
         LOG("no match for metric");
-        return std::string("No NFDGeneralStatus entry for " + args);
+        return std::string("No NFDGeneralStatus entry for " + a);
     }
     ndn::nfdManagementQ fetcher;
     ndn::nfd::ForwarderStatus status;
@@ -148,14 +147,14 @@ const std::string nfdGSProbe(std::string args) {
         std::cerr << "Error: " << e.what() << std::endl;
     }
     std::stringstream result;
-    if(args.compare("Uptime") == 0) {
-        result << args <<": " << (status.getCurrentTimestamp() - status.getStartTimestamp());
+    if(a.compare("Uptime") == 0) {
+        result << a <<": " << (status.getCurrentTimestamp() - status.getStartTimestamp());
         return result.str();
     }
     result << status;
-    if(args.compare("all") == 0)
+    if(a.compare("all") == 0)
         return result.str();
-    std::size_t l = result.str().find(args);
+    std::size_t l = result.str().find(a);
     std::size_t e = result.str().find("\n", l+1);
     e -= l;
     return result.str().substr(l, e-1);
@@ -192,7 +191,7 @@ parseDatasetVector(ndn::Block b, uint32_t t)
 }
 
 // empty argument string means to get list, otherwise look for match
-const std::string nfdRIBProbe(std::string args) {
+static std::string nfdRIBProbe(const std::string& args) {
     LOG("nfdRIBProbe for prefix " + args);
     ndn::nfdManagementQ fetcher;
     std::vector<ndn::nfd::RibEntry> dataset;
@@ -236,7 +235,7 @@ const std::string nfdRIBProbe(std::string args) {
 
 #include <ndn-cxx/mgmt/nfd/strategy-choice.hpp>
 
-const std::string nfdStrategyProbe(std::string args) {
+static std::string nfdStrategyProbe(const std::string& args) {
     //uses NFD management commands
     LOG("nfdRoutePrefixProbe with argument " + args);
     if(!args.empty())
@@ -268,11 +267,8 @@ const std::string nfdStrategyProbe(std::string args) {
 // #include <ndn-cxx/mgmt/nfd/face-traits.hpp>
 #include <ndn-cxx/mgmt/nfd/face-status.hpp>
 
-const std::string nfdFSProbe(std::string args) {
+static std::string nfdFSProbe(const std::string& args) {
     LOG("nfdFaceStatusProbe with argument " + args);
-    if(args.empty()) {
-        args.assign("all");
-    }
 
     ndn::nfdManagementQ fetcher;
     std::vector<ndn::nfd::FaceStatus> dataset;
@@ -317,7 +313,7 @@ void periodicReporter(int interval, int lifeTime) {
     std::cout << "\nPeriodic reporting ends after " << n << " reports" << std::endl;
 }
 
-const std::string periodicProbe(std::string args) {
+static std::string periodicProbe(const std::string& args) {
     try {
         int per = std::stoi(args);
         int lt = 5*per; //this should also be part of args in future

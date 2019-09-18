@@ -51,18 +51,27 @@ struct RName : public Name {
     {
         return at(m_n2i.at(s));
     }
+    std::string str(std::string_view s) const
+    {
+        auto c = at(m_n2i.at(s));
+        return std::string((const char*)c.value(), c.value_size());
+    }
   private:
     // XXX temporary placeholder component name to index map. Will be
     // replaced by schema-based version for release.
     static inline const std::unordered_map<std::string_view, int8_t> m_n2i {
-        { "rTimestamp", -1 },
-        { "rSrcId", -2 },
-        { "cTimestamp", -3 },
-        { "pArgs", -4 },
-        { "pType", -5 },
-        { "origin", -7 },
-        { "Id", -8 },
-        { "role", -9 },
+        { "root", 0 },
+        { "domain", 1 },
+        { "tType", 2 },
+        { "tId", 3 },
+        { "topic", 4 },
+        { "Id", 5 },
+        { "origin", 6 },
+        { "pType", 8 },
+        { "pArgs", 9 },
+        { "cTimestamp", 10 },
+        { "rSrcId", 11 },
+        { "rTimestamp", 12 },
     };
 };
 struct Reply : public Publication {
