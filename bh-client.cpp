@@ -90,8 +90,8 @@ static void blackholeReply(const Reply& r, CRshim& shim)
 {
     // Using the reply timestamps to print cli-to-nod & nod-to-cli times
     std::cout << "Reply from NOD " << r["rSrcId"] << " took "
-              << to_string(r.timeDelta("rTimestamp", "cTimestamp")) << " secs to, "
-              << to_string(r.timeDelta("rTimestamp")) << " from." << std::endl;
+              << to_string(r.timeDelta("rTS", "cTS")) << " secs to, "
+              << to_string(r.timeDelta("rTS")) << " from." << std::endl;
     nReply++;
     const auto& c = r.getContent();
     if(!c.empty()) {

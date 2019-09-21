@@ -66,12 +66,12 @@ struct RName : public Name {
         { "tId", 3 },
         { "topic", 4 },
         { "Id", 5 },
-        { "origin", 6 },
-        { "pType", 8 },
-        { "pArgs", 9 },
-        { "cTimestamp", 10 },
-        { "rSrcId", 11 },
-        { "rTimestamp", 12 },
+        { "pType", 6 },
+        { "pArgs", 7 },
+        { "origin", 8 },
+        { "cTS", 9 },
+        { "rSrcId", 10 },
+        { "rTS", 11 },
     };
 };
 struct Reply : public Publication {
@@ -140,7 +140,8 @@ class CRshim
     Publication buildCmd(const std::string& s, const std::string& a = "")
     {
         Name cmd(prefix());
-        cmd.append(Name::Component(s)).append(Name::Component(a)).appendTimestamp();
+        cmd.append(Name::Component(s)).append(Name::Component(a))
+           .append(myPID()).appendTimestamp();
         return Publication(cmd);
     }
 
@@ -272,7 +273,7 @@ class CRshim
     }
     static std::string myID()
     {
-        return addHostname("/", "uid" + std::to_string(getuid()));
+        return "uid" + std::to_string(getuid());
     }
     /*
      * construct the full topic name prefix for this session  given
@@ -286,7 +287,6 @@ class CRshim
         p += target;
         p += "/command/";
         p += myID();
-        p += "/probe";
         return p;
     }
     // -- end of place holders --
