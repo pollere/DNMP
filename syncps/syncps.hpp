@@ -577,9 +577,9 @@ class SyncPubsub
 
     uint32_t hashIBLT(const Name& n) const
     {
-        const auto& b = n[-1].wireEncode();
+        const auto& b = n[-1];
         return murmurHash3(N_HASHCHECK,
-                           std::vector<uint8_t>(b.wire(), b.wire() + b.size()));
+                           std::vector<uint8_t>(b.value_begin(), b.value_end()));
     }
 
   private:
