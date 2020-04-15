@@ -37,7 +37,7 @@ genericCLI -p Pinger -t all
 genericCLI-p NFDRIB 
 genericCLI -p NFDGeneralStatus 
 genericCLI -p NFDGeneralStatus -a all 
-genericCLI -p perNFDGS -a <period_in-milliseconds>
+genericCLI -p perNFDGS -a <period_in_seconds_float>
 ```
 
 The perNFDGS probe requests the NFDGeneralStatus at the period intervals five times then exits. This is done from the Probe, not the Client, which has already exited so output is currently to the NOD standard output, nothing elegant but a stub for future work. 
