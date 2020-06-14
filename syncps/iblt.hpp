@@ -1,5 +1,7 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
+ * Pollere, Inc added (6/14/2020) checks for validity to file 
+ *
  * Copyright (c) 2014-2018,  The University of Memphis
  *
  * This file is part of PSync.
@@ -20,25 +22,19 @@
  * You should have received a copy of the GNU General Public License along with
  * PSync, e.g., in COPYING.md file.  If not, see <http://www.gnu.org/licenses/>.
  *
-
  * This file incorporates work covered by the following copyright and
  * permission notice:
-
  * The MIT License (MIT)
-
  * Copyright (c) 2014 Gavin Andresen
-
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
-
  * The above copyright notice and this permission notice shall be included in
  all
  * copies or substantial portions of the Software.
-
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -51,8 +47,12 @@
 #ifndef SYNCPS_IBLT_HPP
 #define SYNCPS_IBLT_HPP
 
+#include <cmath>
 #include <inttypes.h>
+#include <iomanip>
+#include <iostream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -160,6 +160,10 @@ class HashTableEntry
     }
 };
 
+class IBLT;
+static inline std::ostream& operator<<(std::ostream& out, const IBLT& iblt);
+static inline std::ostream& operator<<(std::ostream& out, const HashTableEntry& hte);
+
 /**
  * @brief Invertible Bloom Lookup Table (Invertible Bloom Filter)
  *
@@ -195,6 +199,8 @@ class IBLT
         m_hashTable.resize(nEntries);
     }
 
+    IBLT(const std::vector<HashTableEntry>& hashTable) : m_hashTable(hashTable) {}
+
     /**
      * @brief Populate the hash table using the vector representation of IBLT
      *
@@ -217,9 +223,60 @@ class IBLT
             }
         }
     }
+
+    /**
+     * Entry Hash functions. The hash table is split into N_HASH
+     * equal-sized sub-tables with a different hash function for each.
+     * Each entry is added/deleted from all subtables.
+     */
+    auto hash0(size_t key) const noexcept
+    {
+        auto stsize = m_hashTable.size() / N_HASH;
+        return murmurHash3(0, key) % stsize;
+    }
+    auto hash1(size_t key) const noexcept
+    {
+        auto stsize = m_hashTable.size() / N_HASH;
+        return murmurHash3(1, key) % stsize + stsize;
+    }
+    auto hash2(size_t key) const noexcept
+    {
+        auto stsize = m_hashTable.size() / N_HASH;
+        return murmurHash3(2, key) % stsize + stsize * 2;
+    }
+
+    /** validity checking for 'key' on peel or delete
+     *
+     * Try to detect a corrupted iblt or 'invalid' key (deleting an item
+     * twice or deleting something that wasn't inserted). Anomalies
+     * detected are:
+     *  - one or more of the key's 3 hash entries is empty
+     *  - one or more of the key's 3 hash entries is 'pure' but doesn't
+     *    contain 'key'
+     */
+    bool chkPeer(size_t key, size_t idx) const noexcept
+    {
+        auto hte = getHashTable().at(idx);
+        return hte.isEmpty() || (hte.isPure() && hte.keySum != key);
+    }
+
+    bool badPeers(size_t key) const noexcept
+    {
+        return chkPeer(key, hash0(key)) || chkPeer(key, hash1(key)) ||
+               chkPeer(key, hash2(key));
+    }
+
     void insert(uint32_t key) { update(INSERT, key); }
 
-    void erase(uint32_t key) { update(ERASE, key); }
+    void erase(uint32_t key)
+    {
+        if (badPeers(key)) {
+            std::cerr << "error - invalid iblt erase: badPeers for key "
+                      << std::hex << key << "\n";
+            return;
+        }
+        update(ERASE, key);
+    }
 
     /**
      * @brief List all the entries in the IBLT
@@ -237,29 +294,26 @@ class IBLT
     {
         IBLT peeled = *this;
 
-        size_t nErased = 0;
+        bool peeledSomething;
         do {
-            nErased = 0;
+            peeledSomething = false;
             for (const auto& entry : peeled.m_hashTable) {
                 if (entry.isPure()) {
+                    if (peeled.badPeers(entry.keySum)) {
+                        std::cerr << "error - invalid iblt: badPeers for entry:"
+                            << entry << "\n";
+                        return false;
+                    }
                     if (entry.count == 1) {
                         positive.insert(entry.keySum);
                     } else {
                         negative.insert(entry.keySum);
                     }
                     peeled.update(-entry.count, entry.keySum);
-                    ++nErased;
+                    peeledSomething = true;
                 }
             }
-        } while (nErased > 0);
-
-        // If any buckets for one of the hash functions is not empty,
-        // then we didn't peel them all:
-        for (const auto& entry : peeled.m_hashTable) {
-            if (entry.isEmpty() != true) {
-                return false;
-            }
-        }
+        } while (peeledSomething);
 
         return true;
     }
@@ -333,7 +387,7 @@ class IBLT
         bio::copy(in, sstream);
 
         std::string compressedIBF = sstream.str();
-        name.append(compressedIBF.begin(), compressedIBF.end());
+        name.append((const uint8_t *)compressedIBF.data(), compressedIBF.size());
     }
 
     /**
@@ -390,7 +444,7 @@ class IBLT
     std::vector<HashTableEntry> m_hashTable;
 };
 
-bool operator==(const IBLT& iblt1, const IBLT& iblt2)
+static inline bool operator==(const IBLT& iblt1, const IBLT& iblt2)
 {
     auto iblt1HashTable = iblt1.getHashTable();
     auto iblt2HashTable = iblt2.getHashTable();
@@ -409,20 +463,53 @@ bool operator==(const IBLT& iblt1, const IBLT& iblt2)
     return true;
 }
 
-bool operator!=(const IBLT& iblt1, const IBLT& iblt2)
+static inline bool operator!=(const IBLT& iblt1, const IBLT& iblt2)
 {
     return !(iblt1 == iblt2);
 }
 
-std::ostream& operator<<(std::ostream& out, const IBLT& iblt)
+static inline std::ostream& operator<<(std::ostream& out, const HashTableEntry& hte)
 {
-    out << "count keySum keyCheckMatch\n";
-    for (const auto& entry : iblt.getHashTable()) {
-        out << entry.count << " " << entry.keySum << " ";
-        out << ((murmurHash3(N_HASHCHECK, entry.keySum) == entry.keyCheck) ||
-                        (entry.isEmpty())
-                    ? "true" : "false");
-        out << "\n";
+    out << std::dec << std::setw(5) << hte.count << std::hex << std::setw(9)
+        << hte.keySum << std::setw(9) << hte.keyCheck;
+    return out;
+}
+
+static inline std::string prtPeer(const IBLT& iblt, size_t idx, size_t rep)
+{
+    if (idx == rep) {
+        return "";
+    }
+    std::ostringstream rslt{};
+    rslt << " @" << std::hex << rep;
+    auto hte = iblt.getHashTable().at(rep);
+    if (hte.isEmpty()) {
+        rslt << "!";
+    } else if (iblt.getHashTable().at(idx).keySum != hte.keySum) {
+        rslt << (hte.isPure()? "?" : "*");
+    }
+    return rslt.str();
+}
+
+static inline std::string prtPeers(const IBLT& iblt, size_t idx)
+{
+    auto hte = iblt.getHashTable().at(idx);
+    if (! hte.isPure()) {
+        // can only get the peers of 'pure' entries
+        return "";
+    }
+    return prtPeer(iblt, idx, iblt.hash0(hte.keySum)) +
+           prtPeer(iblt, idx, iblt.hash1(hte.keySum)) +
+           prtPeer(iblt, idx, iblt.hash2(hte.keySum));
+}
+
+static inline std::ostream& operator<<(std::ostream& out, const IBLT& iblt)
+{
+    out << "idx count keySum keyCheck\n";
+    auto idx = 0;
+    for (const auto& hte : iblt.getHashTable()) {
+        out << std::hex << std::setw(2) << idx << hte << prtPeers(iblt, idx) << "\n";
+        idx++;
     }
     return out;
 }
